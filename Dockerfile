@@ -1,19 +1,10 @@
-FROM node:20-alpine AS builder
+FROM python:3.12-slim
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+RUN useradd -m appuser
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-RUN npm run build
-
-FROM node:20-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs \
- && adduser --system --uid 1001 nextjs
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-USER nextjs
+USER appuser
 EXPOSE 3000
 ENV PORT=3000
-CMD ["node", "server.js"]
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:3000", "--workers", "2", "--timeout", "60"]
