@@ -250,129 +250,129 @@ jobs:
           echo "status=$([ $CODE -eq 0 ] && echo success || echo failed)" >> $GITHUB_OUTPUT
           exit $CODE
 
-  # ── Stage 5: War Room on deploy failure ───────────────────────────────────
-  war-room:
-    name: "Stage 5 · War Room"
-    runs-on: ubuntu-latest
-    needs: deploy
-    if: failure() 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT }}
+  # # ── Stage 5: War Room on deploy failure ───────────────────────────────────
+  # war-room:
+  #   name: "Stage 5 · War Room"
+  #   runs-on: ubuntu-latest
+  #   needs: deploy
+  #   if: failure() 
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         token: ${{ secrets.GH_PAT }}
 
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
-          role-session-name: GitHubActions-Backend-${{ github.run_id }}
-          aws-region: "us-east-1"
+  #     - name: Configure AWS credentials via OIDC
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
+  #         role-session-name: GitHubActions-Backend-${{ github.run_id }}
+  #         aws-region: "us-east-1"
 
-      - name: Multi-Agent War Room
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          pip install boto3 --quiet
-          python3 - <<'PYEOF'
-          import os, json, boto3, urllib.request, datetime
+  #     - name: Multi-Agent War Room
+  #       env:
+  #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  #         GH_TOKEN: ${{ secrets.GH_PAT }}
+  #       run: |
+  #         pip install boto3 --quiet
+  #         python3 - <<'PYEOF'
+  #         import os, json, boto3, urllib.request, datetime
 
-          ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-          CLUSTER = "autonomous-sre-cluster"
-          SERVICE = "autonomous-sre-frontend"
+  #         ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+  #         CLUSTER = "autonomous-sre-cluster"
+  #         SERVICE = "autonomous-sre-frontend"
 
-          def claude(messages, system="You are an expert SRE.", max_tokens=800):
-              payload = json.dumps({"model": "claude-sonnet-4-20250514", "max_tokens": max_tokens,
-                  "system": system, "messages": messages}).encode()
-              req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=payload,
-                  headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
-                           "anthropic-version": "2023-06-01"})
-              with urllib.request.urlopen(req) as resp:
-                  return json.loads(resp.read())["content"][0]["text"]
+  #         def claude(messages, system="You are an expert SRE.", max_tokens=800):
+  #             payload = json.dumps({"model": "claude-sonnet-4-20250514", "max_tokens": max_tokens,
+  #                 "system": system, "messages": messages}).encode()
+  #             req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=payload,
+  #                 headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
+  #                          "anthropic-version": "2023-06-01"})
+  #             with urllib.request.urlopen(req) as resp:
+  #                 return json.loads(resp.read())["content"][0]["text"]
 
-          print("\n🚨 WAR ROOM: frontend deployment failure")
+  #         print("\n🚨 WAR ROOM: frontend deployment failure")
 
-          # Fetch stopped task info
-          ecs_info = "No data"
-          try:
-              ecs = boto3.client("ecs", region_name="us-east-1")
-              tasks = ecs.list_tasks(cluster=CLUSTER, serviceName=SERVICE, desiredStatus="STOPPED")
-              if tasks["taskArns"]:
-                  desc = ecs.describe_tasks(cluster=CLUSTER, tasks=tasks["taskArns"][:2])
-                  ecs_info = json.dumps([{
-                      "stopped": t.get("stoppedReason"),
-                      "containers": [{"name": c["name"], "exit": c.get("exitCode"), "reason": c.get("reason","")}
-                                     for c in t.get("containers",[])]
-                  } for t in desc["tasks"]], indent=2)
-          except Exception as e:
-              ecs_info = str(e)
+  #         # Fetch stopped task info
+  #         ecs_info = "No data"
+  #         try:
+  #             ecs = boto3.client("ecs", region_name="us-east-1")
+  #             tasks = ecs.list_tasks(cluster=CLUSTER, serviceName=SERVICE, desiredStatus="STOPPED")
+  #             if tasks["taskArns"]:
+  #                 desc = ecs.describe_tasks(cluster=CLUSTER, tasks=tasks["taskArns"][:2])
+  #                 ecs_info = json.dumps([{
+  #                     "stopped": t.get("stoppedReason"),
+  #                     "containers": [{"name": c["name"], "exit": c.get("exitCode"), "reason": c.get("reason","")}
+  #                                    for c in t.get("containers",[])]
+  #                 } for t in desc["tasks"]], indent=2)
+  #         except Exception as e:
+  #             ecs_info = str(e)
 
-          # Fetch recent logs
-          logs = "No logs"
-          try:
-              cw = boto3.client("logs", region_name="us-east-1")
-              streams = cw.describe_log_streams(logGroupName="/ecs/autonomous-sre",
-                  logStreamNamePrefix="frontend", orderBy="LastEventTime", descending=True, limit=1)
-              if streams["logStreams"]:
-                  events = cw.get_log_events(logGroupName="/ecs/autonomous-sre",
-                      logStreamName=streams["logStreams"][0]["logStreamName"], limit=30, startFromHead=False)
-                  logs = "\n".join(e["message"] for e in events["events"])
-          except Exception as e:
-              logs = str(e)
+  #         # Fetch recent logs
+  #         logs = "No logs"
+  #         try:
+  #             cw = boto3.client("logs", region_name="us-east-1")
+  #             streams = cw.describe_log_streams(logGroupName="/ecs/autonomous-sre",
+  #                 logStreamNamePrefix="frontend", orderBy="LastEventTime", descending=True, limit=1)
+  #             if streams["logStreams"]:
+  #                 events = cw.get_log_events(logGroupName="/ecs/autonomous-sre",
+  #                     logStreamName=streams["logStreams"][0]["logStreamName"], limit=30, startFromHead=False)
+  #                 logs = "\n".join(e["message"] for e in events["events"])
+  #         except Exception as e:
+  #             logs = str(e)
 
-          # Agent 1: Log analyst
-          log_report = claude([{"role": "user", "content": f"""ECS Fargate frontend (Python Flask/gunicorn) failed.
-          Stopped task info: {ecs_info}
-          Recent logs: {logs[:2000]}
-          Diagnose in 150 words. Common causes: wrong port, gunicorn not found, app crash on startup."""}],
-              system="ECS log analyst specializing in Python container failures.")
-          print(f"\n[Log Analyst]\n{log_report}")
+  #         # Agent 1: Log analyst
+  #         log_report = claude([{"role": "user", "content": f"""ECS Fargate frontend (Python Flask/gunicorn) failed.
+  #         Stopped task info: {ecs_info}
+  #         Recent logs: {logs[:2000]}
+  #         Diagnose in 150 words. Common causes: wrong port, gunicorn not found, app crash on startup."""}],
+  #             system="ECS log analyst specializing in Python container failures.")
+  #         print(f"\n[Log Analyst]\n{log_report}")
 
-          # Agent 2: Blast radius
-          blast = claude([{"role": "user", "content": f"Frontend Flask service failed on ECS. Backend still running. Impact: all user traffic to port 80 returns 502. Backend /api/* unaffected. Assess in 80 words. Log: {log_report[:300]}"}],
-              system="Blast radius estimator.")
-          print(f"\n[Blast Radius]\n{blast}")
+  #         # Agent 2: Blast radius
+  #         blast = claude([{"role": "user", "content": f"Frontend Flask service failed on ECS. Backend still running. Impact: all user traffic to port 80 returns 502. Backend /api/* unaffected. Assess in 80 words. Log: {log_report[:300]}"}],
+  #             system="Blast radius estimator.")
+  #         print(f"\n[Blast Radius]\n{blast}")
 
-          # Agent 3: Orchestrator decision
-          decision_raw = claude([{"role": "user", "content": f"War room orchestrator. Log: {log_report}. Choose: ROLLBACK|REDEPLOY. JSON only: {{\"action\":\"ROLLBACK\",\"reason\":\"...\"}}"}],
-              system="War room orchestrator. Be decisive.")
-          print(f"\n[Orchestrator]\n{decision_raw}")
+  #         # Agent 3: Orchestrator decision
+  #         decision_raw = claude([{"role": "user", "content": f"War room orchestrator. Log: {log_report}. Choose: ROLLBACK|REDEPLOY. JSON only: {{\"action\":\"ROLLBACK\",\"reason\":\"...\"}}"}],
+  #             system="War room orchestrator. Be decisive.")
+  #         print(f"\n[Orchestrator]\n{decision_raw}")
 
-          try:
-              clean = decision_raw.strip()
-              if "```" in clean:
-                  clean = clean.split("```")[1]
-                  if clean.startswith("json"): clean = clean[4:]
-              decision = json.loads(clean.strip())
-          except:
-              decision = {"action": "ROLLBACK", "reason": "parse error"}
+  #         try:
+  #             clean = decision_raw.strip()
+  #             if "```" in clean:
+  #                 clean = clean.split("```")[1]
+  #                 if clean.startswith("json"): clean = clean[4:]
+  #             decision = json.loads(clean.strip())
+  #         except:
+  #             decision = {"action": "ROLLBACK", "reason": "parse error"}
 
-          # Execute
-          action = decision.get("action", "ROLLBACK")
-          ecs_client = boto3.client("ecs", region_name="us-east-1")
-          if action == "ROLLBACK":
-              try:
-                  svc = ecs_client.describe_services(cluster=CLUSTER, services=[SERVICE])["services"][0]
-                  td = svc["taskDefinition"]
-                  family = td.rsplit(":",1)[0].split("/")[-1]
-                  rev = int(td.rsplit(":",1)[1])
-                  if rev > 1:
-                      ecs_client.update_service(cluster=CLUSTER, service=SERVICE, taskDefinition=f"{family}:{rev-1}")
-                      print(f"Rolled back to revision {rev-1}")
-              except Exception as e:
-                  print(f"Rollback error: {e}")
-          elif action == "REDEPLOY":
-              ecs_client.update_service(cluster=CLUSTER, service=SERVICE, forceNewDeployment=True)
-              print("Redeployment triggered")
+  #         # Execute
+  #         action = decision.get("action", "ROLLBACK")
+  #         ecs_client = boto3.client("ecs", region_name="us-east-1")
+  #         if action == "ROLLBACK":
+  #             try:
+  #                 svc = ecs_client.describe_services(cluster=CLUSTER, services=[SERVICE])["services"][0]
+  #                 td = svc["taskDefinition"]
+  #                 family = td.rsplit(":",1)[0].split("/")[-1]
+  #                 rev = int(td.rsplit(":",1)[1])
+  #                 if rev > 1:
+  #                     ecs_client.update_service(cluster=CLUSTER, service=SERVICE, taskDefinition=f"{family}:{rev-1}")
+  #                     print(f"Rolled back to revision {rev-1}")
+  #             except Exception as e:
+  #                 print(f"Rollback error: {e}")
+  #         elif action == "REDEPLOY":
+  #             ecs_client.update_service(cluster=CLUSTER, service=SERVICE, forceNewDeployment=True)
+  #             print("Redeployment triggered")
 
-          print(f"\nWar room complete. Action: {action}")
-          PYEOF
+  #         print(f"\nWar room complete. Action: {action}")
+  #         PYEOF
 
-      - name: Create incident issue
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          gh issue create \
-            --title "🚨 Incident: Frontend deploy failed $(date +%Y-%m-%d)" \
-            --body "Auto-created by war room. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label "incident" || true
+  #     - name: Create incident issue
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GH_PAT }}
+  #       run: |
+  #         gh issue create \
+  #           --title "🚨 Incident: Frontend deploy failed $(date +%Y-%m-%d)" \
+  #           --body "Auto-created by war room. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+  #           --label "incident" || true
