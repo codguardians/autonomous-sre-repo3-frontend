@@ -6,16 +6,14 @@ app = Flask(__name__)
 
 API_URL = os.environ.get("BACKEND_API_URL", "http://localhost:8000")
 
-
 @app.route("/")
 def index():
     return render_template("index.html", api_url=API_URL)
 
-
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "healthy", "service": "frontend", "version": "1.0.0"})
-
+    # Merged your two health functions into one
+    return jsonify({"status": "healthy", "service": "frontend", "version": "1.0.0"}), 200
 
 @app.route("/api/backend-status")
 def backend_status():
@@ -25,10 +23,6 @@ def backend_status():
     except Exception as e:
         return jsonify({"status": "unreachable", "error": str(e)}), 503
 
-@app.route("/api/health")
-def health():
-    return jsonify({"status": "healthy"}), 200  # explicit 200
-    
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
