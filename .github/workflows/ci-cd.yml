@@ -2,9 +2,9 @@ name: Frontend CI/CD — Autonomous SRE
 
 on:
   push:
-    branches: [main, "fix/*"]
+    branches: ["*"]
   pull_request:
-    branches: [main]
+    branches: ["*"]
 
 env:
   AWS_REGION: us-east-1
