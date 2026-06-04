@@ -1,11 +1,10 @@
 name: Frontend CI/CD — Autonomous SRE
 
-
 on:
   push:
-    branches: ["*"]
+    branches: [main, "fix/*"]
   pull_request:
-    branches: ["*"]
+    branches: [main]
 
 env:
   AWS_REGION: us-east-1
@@ -65,15 +64,14 @@ jobs:
           import os, json, urllib.request
           ecr_url = """${{ steps.ecr.outputs.ecr_url }}""".strip()
           safe = bool(ecr_url)
-
-          prompt = f"""Dependency check for repo3-frontend (Python Flask app on ECS).
+          prompt = f"""Dependency check for repo3-frontend (Python Flask on ECS).
           Depends on repo2-app-infra for ECR URL. ECR URL: {ecr_url or 'MISSING'}.
           JSON only: {{"safe_to_proceed": {str(safe).lower()}, "risk_level": "LOW", "summary": "frontend flask deploy", "warnings": {json.dumps([] if safe else ["ECR URL missing — repo2 must deploy first"])}}}"""
-
           payload = json.dumps({"model": "claude-sonnet-4-20250514", "max_tokens": 300,
               "messages": [{"role": "user", "content": prompt}]}).encode()
           req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=payload,
-              headers={"Content-Type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+              headers={"Content-Type": "application/json",
+                       "x-api-key": os.environ["ANTHROPIC_API_KEY"],
                        "anthropic-version": "2023-06-01"})
           with urllib.request.urlopen(req) as resp:
               data = json.loads(resp.read())
@@ -146,18 +144,17 @@ jobs:
           apppy = open("app.py").read() if os.path.exists("app.py") else ""
 
           prompt = f"""Fix a Docker build or runtime failure for a Python Flask app on ECS Fargate.
-
           Dockerfile:\n{dockerfile}
           requirements.txt:\n{reqs}
           app.py:\n{apppy}
-
-          Common issues: wrong port, missing dependency, gunicorn command wrong, pip install failing.
+          Common issues: wrong port, missing dependency, gunicorn command wrong.
           JSON only: {{"root_cause": "...", "fix_description": "...", "file_patches": [{{"filename": "Dockerfile", "search": "...", "replace": "..."}}], "commit_message": "fix: ..."}}"""
 
           payload = json.dumps({"model": "claude-sonnet-4-20250514", "max_tokens": 1000,
               "messages": [{"role": "user", "content": prompt}]}).encode()
           req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=payload,
-              headers={"Content-Type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+              headers={"Content-Type": "application/json",
+                       "x-api-key": os.environ["ANTHROPIC_API_KEY"],
                        "anthropic-version": "2023-06-01"})
           with urllib.request.urlopen(req) as resp:
               data = json.loads(resp.read())
@@ -173,10 +170,13 @@ jobs:
               if os.path.exists(fn):
                   with open(fn) as fp: c = fp.read()
                   if patch.get("search", "") in c:
-                      with open(fn, "w") as fp: fp.write(c.replace(patch["search"], patch["replace"], 1))
+                      with open(fn, "w") as fp:
+                          fp.write(c.replace(patch["search"], patch["replace"], 1))
 
-          with open("/tmp/commit_msg.txt", "w") as fp: fp.write(fix.get("commit_message", "fix: auto-heal frontend"))
-          with open("/tmp/root_cause.txt", "w") as fp: fp.write(fix.get("root_cause", "unknown"))
+          with open("/tmp/commit_msg.txt", "w") as fp:
+              fp.write(fix.get("commit_message", "fix: auto-heal frontend"))
+          with open("/tmp/root_cause.txt", "w") as fp:
+              fp.write(fix.get("root_cause", "unknown"))
           PYEOF
 
           BRANCH="fix/auto-heal-frontend-$(date +%Y%m%d-%H%M%S)"
@@ -187,7 +187,7 @@ jobs:
           git diff --staged --quiet || git commit -m "$(cat /tmp/commit_msg.txt)"
           git push origin "$BRANCH"
           gh pr create \
-            --title "🤖 Auto-heal frontend: $(cat /tmp/commit_msg.txt)" \
+            --title "Auto-heal frontend: $(cat /tmp/commit_msg.txt)" \
             --body "Root cause: $(cat /tmp/root_cause.txt)" \
             --head "$BRANCH" --base main --label "auto-heal" || true
 
@@ -196,6 +196,7 @@ jobs:
     name: "Stage 4 · Deploy to ECS"
     runs-on: ubuntu-latest
     needs: [dependency-prediction, build-push]
+    if: github.ref == 'refs/heads/main'
     outputs:
       deploy_status: ${{ steps.deploy.outputs.status }}
     steps:
@@ -208,40 +209,61 @@ jobs:
           role-session-name: GitHubActions-Backend-${{ github.run_id }}
           aws-region: "us-east-1"
 
-      - name: Update ECS task definition with new image
+      - name: Register new task definition and deploy
         id: deploy
         run: |
           ECR="${{ needs.dependency-prediction.outputs.ecr_url }}"
           TAG="${{ github.sha }}"
           IMAGE="${ECR}:${TAG}"
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --query 'LoadBalancers[?contains(LoadBalancerName,`autonomous-sre`)].DNSName' \
+            --output text)
+          EXEC_ROLE=$(aws iam get-role \
+            --role-name autonomous-sre-ecs-execution-role \
+            --query 'Role.Arn' --output text)
 
-          # Get current task def and update image
-          TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition autonomous-sre-frontend \
-            --query 'taskDefinition' --output json)
-
-          NEW_TASK_DEF=$(echo "$TASK_DEF" | python3 -c "
-          import json, sys
-          td = json.load(sys.stdin)
-          td['containerDefinitions'][0]['image'] = '${IMAGE}'
-          for key in ['taskDefinitionArn','revision','status','requiresAttributes',
-                      'placementConstraints','compatibilities','registeredAt','registeredBy']:
-              td.pop(key, None)
-          print(json.dumps(td))
-          ")
-
+          # Register task def with correct Python env vars (not Next.js)
           NEW_ARN=$(aws ecs register-task-definition \
-            --cli-input-json "$NEW_TASK_DEF" \
+            --family autonomous-sre-frontend \
+            --network-mode awsvpc \
+            --requires-compatibilities FARGATE \
+            --cpu 256 --memory 512 \
+            --execution-role-arn "$EXEC_ROLE" \
+            --container-definitions "[{
+              \"name\": \"frontend\",
+              \"image\": \"${IMAGE}\",
+              \"essential\": true,
+              \"portMappings\": [{\"containerPort\": 3000, \"protocol\": \"tcp\"}],
+              \"environment\": [
+                {\"name\": \"PORT\", \"value\": \"3000\"},
+                {\"name\": \"BACKEND_API_URL\", \"value\": \"http://${ALB_DNS}\"}
+              ],
+              \"logConfiguration\": {
+                \"logDriver\": \"awslogs\",
+                \"options\": {
+                  \"awslogs-group\": \"/ecs/autonomous-sre\",
+                  \"awslogs-region\": \"us-east-1\",
+                  \"awslogs-stream-prefix\": \"frontend\"
+                }
+              },
+              \"healthCheck\": {
+                \"command\": [\"CMD-SHELL\", \"curl -f http://localhost:3000/api/health || exit 1\"],
+                \"interval\": 30,
+                \"timeout\": 10,
+                \"retries\": 3,
+                \"startPeriod\": 60
+              }
+            }]" \
             --query 'taskDefinition.taskDefinitionArn' --output text)
 
-          echo "Registered new task def: $NEW_ARN"
+          echo "Registered: $NEW_ARN"
 
           aws ecs update-service \
             --cluster "${{ env.CLUSTER_NAME }}" \
             --service "${{ env.SERVICE_NAME }}" \
             --task-definition "$NEW_ARN"
 
-          echo "Waiting for deployment to stabilize (max 5 min)..."
+          echo "Waiting for stability..."
           set +e
           aws ecs wait services-stable \
             --cluster "${{ env.CLUSTER_NAME }}" \
@@ -255,18 +277,18 @@ jobs:
   #   name: "Stage 5 · War Room"
   #   runs-on: ubuntu-latest
   #   needs: deploy
-  #   if: failure() 
+  #   if: failure() && github.ref == 'refs/heads/main'
   #   steps:
   #     - uses: actions/checkout@v4
   #       with:
   #         token: ${{ secrets.GH_PAT }}
 
-  #     - name: Configure AWS credentials via OIDC
+  #     - name: Configure AWS credentials
   #       uses: aws-actions/configure-aws-credentials@v4
   #       with:
-  #         role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
-  #         role-session-name: GitHubActions-Backend-${{ github.run_id }}
-  #         aws-region: "us-east-1"
+  #         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+  #         role-session-name: autonomous-sre-${{ github.run_id }}
+  #         aws-region: ${{ env.AWS_REGION }}
 
   #     - name: Multi-Agent War Room
   #       env:
@@ -277,7 +299,7 @@ jobs:
   #         python3 - <<'PYEOF'
   #         import os, json, boto3, urllib.request, datetime
 
-  #         ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+  #         KEY = os.environ["ANTHROPIC_API_KEY"]
   #         CLUSTER = "autonomous-sre-cluster"
   #         SERVICE = "autonomous-sre-frontend"
 
@@ -285,14 +307,13 @@ jobs:
   #             payload = json.dumps({"model": "claude-sonnet-4-20250514", "max_tokens": max_tokens,
   #                 "system": system, "messages": messages}).encode()
   #             req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=payload,
-  #                 headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
+  #                 headers={"Content-Type": "application/json", "x-api-key": KEY,
   #                          "anthropic-version": "2023-06-01"})
   #             with urllib.request.urlopen(req) as resp:
   #                 return json.loads(resp.read())["content"][0]["text"]
 
-  #         print("\n🚨 WAR ROOM: frontend deployment failure")
+  #         print("\n WAR ROOM: frontend deployment failure")
 
-  #         # Fetch stopped task info
   #         ecs_info = "No data"
   #         try:
   #             ecs = boto3.client("ecs", region_name="us-east-1")
@@ -301,41 +322,46 @@ jobs:
   #                 desc = ecs.describe_tasks(cluster=CLUSTER, tasks=tasks["taskArns"][:2])
   #                 ecs_info = json.dumps([{
   #                     "stopped": t.get("stoppedReason"),
-  #                     "containers": [{"name": c["name"], "exit": c.get("exitCode"), "reason": c.get("reason","")}
-  #                                    for c in t.get("containers",[])]
+  #                     "containers": [{"name": c["name"], "exit": c.get("exitCode"),
+  #                                     "reason": c.get("reason", "")}
+  #                                    for c in t.get("containers", [])]
   #                 } for t in desc["tasks"]], indent=2)
   #         except Exception as e:
   #             ecs_info = str(e)
 
-  #         # Fetch recent logs
   #         logs = "No logs"
   #         try:
   #             cw = boto3.client("logs", region_name="us-east-1")
-  #             streams = cw.describe_log_streams(logGroupName="/ecs/autonomous-sre",
-  #                 logStreamNamePrefix="frontend", orderBy="LastEventTime", descending=True, limit=1)
+  #             streams = cw.describe_log_streams(
+  #                 logGroupName="/ecs/autonomous-sre",
+  #                 logStreamNamePrefix="frontend",
+  #                 orderBy="LastEventTime", descending=True, limit=1)
   #             if streams["logStreams"]:
-  #                 events = cw.get_log_events(logGroupName="/ecs/autonomous-sre",
-  #                     logStreamName=streams["logStreams"][0]["logStreamName"], limit=30, startFromHead=False)
+  #                 events = cw.get_log_events(
+  #                     logGroupName="/ecs/autonomous-sre",
+  #                     logStreamName=streams["logStreams"][0]["logStreamName"],
+  #                     limit=30, startFromHead=False)
   #                 logs = "\n".join(e["message"] for e in events["events"])
   #         except Exception as e:
   #             logs = str(e)
 
-  #         # Agent 1: Log analyst
-  #         log_report = claude([{"role": "user", "content": f"""ECS Fargate frontend (Python Flask/gunicorn) failed.
-  #         Stopped task info: {ecs_info}
-  #         Recent logs: {logs[:2000]}
-  #         Diagnose in 150 words. Common causes: wrong port, gunicorn not found, app crash on startup."""}],
-  #             system="ECS log analyst specializing in Python container failures.")
+  #         log_report = claude([{"role": "user", "content":
+  #             f"ECS Fargate frontend (Python Flask/gunicorn) failed.\n"
+  #             f"Stopped task info: {ecs_info}\nRecent logs: {logs[:2000]}\n"
+  #             f"Diagnose in 150 words."}],
+  #             system="ECS log analyst for Python Flask containers.")
   #         print(f"\n[Log Analyst]\n{log_report}")
 
-  #         # Agent 2: Blast radius
-  #         blast = claude([{"role": "user", "content": f"Frontend Flask service failed on ECS. Backend still running. Impact: all user traffic to port 80 returns 502. Backend /api/* unaffected. Assess in 80 words. Log: {log_report[:300]}"}],
+  #         blast = claude([{"role": "user", "content":
+  #             f"Frontend Flask failed. Backend still running. All user traffic on port 80 returns 502. "
+  #             f"Assess impact in 80 words. Log: {log_report[:300]}"}],
   #             system="Blast radius estimator.")
   #         print(f"\n[Blast Radius]\n{blast}")
 
-  #         # Agent 3: Orchestrator decision
-  #         decision_raw = claude([{"role": "user", "content": f"War room orchestrator. Log: {log_report}. Choose: ROLLBACK|REDEPLOY. JSON only: {{\"action\":\"ROLLBACK\",\"reason\":\"...\"}}"}],
-  #             system="War room orchestrator. Be decisive.")
+  #         decision_raw = claude([{"role": "user", "content":
+  #             f"War room. Log: {log_report}. Choose ROLLBACK or REDEPLOY. "
+  #             f"JSON only: {{\"action\":\"ROLLBACK\",\"reason\":\"...\"}}"}],
+  #             system="War room orchestrator.")
   #         print(f"\n[Orchestrator]\n{decision_raw}")
 
   #         try:
@@ -344,20 +370,21 @@ jobs:
   #                 clean = clean.split("```")[1]
   #                 if clean.startswith("json"): clean = clean[4:]
   #             decision = json.loads(clean.strip())
-  #         except:
+  #         except Exception:
   #             decision = {"action": "ROLLBACK", "reason": "parse error"}
 
-  #         # Execute
   #         action = decision.get("action", "ROLLBACK")
   #         ecs_client = boto3.client("ecs", region_name="us-east-1")
+
   #         if action == "ROLLBACK":
   #             try:
   #                 svc = ecs_client.describe_services(cluster=CLUSTER, services=[SERVICE])["services"][0]
   #                 td = svc["taskDefinition"]
-  #                 family = td.rsplit(":",1)[0].split("/")[-1]
-  #                 rev = int(td.rsplit(":",1)[1])
+  #                 family = td.rsplit(":", 1)[0].split("/")[-1]
+  #                 rev = int(td.rsplit(":", 1)[1])
   #                 if rev > 1:
-  #                     ecs_client.update_service(cluster=CLUSTER, service=SERVICE, taskDefinition=f"{family}:{rev-1}")
+  #                     ecs_client.update_service(cluster=CLUSTER, service=SERVICE,
+  #                                               taskDefinition=f"{family}:{rev-1}")
   #                     print(f"Rolled back to revision {rev-1}")
   #             except Exception as e:
   #                 print(f"Rollback error: {e}")
@@ -373,6 +400,6 @@ jobs:
   #         GH_TOKEN: ${{ secrets.GH_PAT }}
   #       run: |
   #         gh issue create \
-  #           --title "🚨 Incident: Frontend deploy failed $(date +%Y-%m-%d)" \
+  #           --title "Incident: Frontend deploy failed $(date +%Y-%m-%d)" \
   #           --body "Auto-created by war room. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
   #           --label "incident" || true
