@@ -2,9 +2,9 @@ name: Frontend CI/CD — Autonomous SRE
 
 on:
   push:
-    branches: [main, "fix/*"]
+    branches: ["*"]
   pull_request:
-    branches: [main]
+    branches: ["*"]
 
 env:
   AWS_REGION: us-east-1
@@ -28,12 +28,12 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: autonomous-sre-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
+          role-session-name: GitHubActions-Backend-${{ github.run_id }}
+          aws-region: "us-east-1"
 
       - name: Get ECR URL from Repo 2 state
         id: ecr
@@ -97,12 +97,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: autonomous-sre-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
+          role-session-name: GitHubActions-Backend-${{ github.run_id }}
+          aws-region: "us-east-1"
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
@@ -201,12 +201,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: autonomous-sre-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
+          role-session-name: GitHubActions-Backend-${{ github.run_id }}
+          aws-region: "us-east-1"
 
       - name: Update ECS task definition with new image
         id: deploy
@@ -261,12 +261,12 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: autonomous-sre-${{ github.run_id }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::160071257600:role/CICD-codguardians"
+          role-session-name: GitHubActions-Backend-${{ github.run_id }}
+          aws-region: "us-east-1"
 
       - name: Multi-Agent War Room
         env:
