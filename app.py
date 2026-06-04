@@ -34,7 +34,7 @@ pre  { background: #f4f4f4; padding: 10px; border-radius: 4px; font-size: 12px; 
 </div>
 
 <script>
-fetch("/api/backend-status")
+fetch("/internal/backend-status")
   .then(r => {
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
@@ -48,7 +48,7 @@ fetch("/api/backend-status")
   })
   .catch(e => {
     document.getElementById("status").innerHTML =
-      '<span class="err">&#10007; Fetch failed: ' + e.message + '</span>';
+      '<span class="err">&#10007; ' + e.message + '</span>';
     document.getElementById("raw").textContent = "Check browser console for details";
   });
 </script>
@@ -66,14 +66,13 @@ def health():
     return jsonify({"status": "healthy", "service": "frontend"}), 200
 
 
-@app.route("/api/backend-status")
+# /internal/* is NOT matched by the ALB /api/* listener rule
+@app.route("/internal/backend-status")
 def backend_status():
     if not BACKEND_API_URL:
-        return jsonify({"status": "error", "error": "BACKEND_API_URL env var not set"}), 503
+        return jsonify({"status": "error", "error": "BACKEND_API_URL not set"}), 503
     try:
-        # Try /health first, fall back to /api/status
-        url = f"{BACKEND_API_URL}/health"
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(f"{BACKEND_API_URL}/health", timeout=5)
         resp.raise_for_status()
         return jsonify(resp.json())
     except requests.exceptions.ConnectionError as e:
